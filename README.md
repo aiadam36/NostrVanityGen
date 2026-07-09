@@ -15,7 +15,7 @@ Configure the value:
 
 ```python
 TARGET = "null"  # your ideal pubkey
-NUM_THREADS = 4  # amount of cpu cores allocated
+NUM_WORKERS = 4  # amount of processes
 ```
 
 Then run `python3 main.py`
