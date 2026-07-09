@@ -32,11 +32,11 @@ def _prefix_to_bitmask(prefix: str):
     return target_bytes, mask_bytes
 
 
-def _worker(target: str, target_bytes: bytes, mask_bytes: bytes,
-            counter: mp.Value, done: mp.Event):
+def _worker(worker_id: int, target: str, target_bytes: bytes, mask_bytes: bytes,
+            counters: mp.Array, done: mp.Event, result_queue: mp.Queue):
     mask_len = len(mask_bytes)
-    batch = 0
-    BATCH_SIZE = 10_000
+    local_count = 0
+    SYNC_EVERY = 1_000
 
     while not done.is_set():
         pk = PrivateKey()
@@ -48,32 +48,18 @@ def _worker(target: str, target_bytes: bytes, mask_bytes: bytes,
                 match = False
                 break
 
-        batch += 1
+        local_count += 1
+
+        if local_count % SYNC_EVERY == 0:
+            counters[worker_id] = local_count
 
         if match:
-            with counter.get_lock():
-                counter.value += batch
-                total = counter.value
-            print(
-                f"\nFound after {total:,} attempts!\n"
-                f"  npub : {pk.public_key.bech32()}\n"
-                f"  nsec : {pk.bech32()}\n",
-                flush=True,
-            )
+            counters[worker_id] = local_count
             done.set()
+            result_queue.put((pk.public_key.bech32(), pk.bech32()))
             return
 
-        if batch % BATCH_SIZE == 0:
-            with counter.get_lock():
-                counter.value += BATCH_SIZE
-                total = counter.value
-            if total % 1_000_000 < BATCH_SIZE:
-                print(
-                    f"{datetime.datetime.now():%H:%M:%S} — "
-                    f"tried {total:,} keys so far",
-                    flush=True,
-                )
-            batch = 0
+    counters[worker_id] = local_count
 
 
 def main():
@@ -94,23 +80,51 @@ def main():
     print(f"Searching : npub1{target}...")
     print(f"Workers   : {NUM_WORKERS}\n")
 
-    counter = mp.Value("q", 0)
+    counters = mp.Array("q", NUM_WORKERS)
     done = mp.Event()
+    result_queue = mp.Queue()
     start = time.time()
 
     workers = [
         mp.Process(
             target=_worker,
-            args=(target, target_bytes, mask_bytes, counter, done),
+            args=(i, target, target_bytes, mask_bytes, counters, done, result_queue),
             daemon=True,
         )
-        for _ in range(NUM_WORKERS)
+        for i in range(NUM_WORKERS)
     ]
     for w in workers:
         w.start()
+
+    REPORT_EVERY = 1_000_000
+    last_reported = 0
+    while not done.is_set():
+        time.sleep(0.5)
+        total = sum(counters)
+        if total - last_reported >= REPORT_EVERY:
+            print(
+                f"{datetime.datetime.now():%H:%M:%S} — "
+                f"tried {total:,} keys so far",
+                flush=True,
+            )
+            last_reported = total
+
     for w in workers:
         w.join()
 
+    total = sum(counters)
+    npub, nsec = result_queue.get()
+
+    per_worker = "  |  ".join(
+        f"w{i+1}: {counters[i]:,}" for i in range(NUM_WORKERS)
+    )
+    print(
+        f"\nFound after {total:,} total attempts!\n"
+        f"  {per_worker}\n"
+        f"\n  npub : {npub}\n"
+        f"  nsec : {nsec}\n",
+        flush=True,
+    )
     print(f"Done in {time.time() - start:.1f}s")
 
 
