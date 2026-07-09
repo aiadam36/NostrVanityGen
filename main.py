@@ -1,10 +1,10 @@
 import time
 import datetime
-from threading import Event, Lock, Thread
+import multiprocessing as mp
 from nostr.key import PrivateKey
 
 TARGET = "null"
-NUM_THREADS = 4
+NUM_WORKERS = 4
 
 BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 BECH32_VALUES = {c: i for i, c in enumerate(BECH32_CHARSET)}
@@ -32,69 +32,48 @@ def _prefix_to_bitmask(prefix: str):
     return target_bytes, mask_bytes
 
 
-class _Counter:
-    def __init__(self):
-        self.n = 0
-        self._lock = Lock()
+def _worker(target: str, target_bytes: bytes, mask_bytes: bytes,
+            counter: mp.Value, done: mp.Event):
+    mask_len = len(mask_bytes)
+    batch = 0
+    BATCH_SIZE = 10_000
 
-    def increment(self, step=1):
-        with self._lock:
-            self.n += step
-            return self.n
+    while not done.is_set():
+        pk = PrivateKey()
 
+        raw_x = pk.public_key.raw_bytes
+        match = True
+        for i in range(mask_len):
+            if (raw_x[i] & mask_bytes[i]) != target_bytes[i]:
+                match = False
+                break
 
-class _Worker(Thread):
-    def __init__(self, target: str, target_bytes: bytes, mask_bytes: bytes,
-                 counter: _Counter, done: Event):
-        super().__init__(daemon=True)
-        self.target = target
-        self.target_bytes = target_bytes
-        self.mask_bytes = mask_bytes
-        self.counter = counter
-        self.done = done
+        batch += 1
 
-    def run(self):
-        target_bytes = self.target_bytes
-        mask_bytes = self.mask_bytes
-        mask_len = len(mask_bytes)
-        done = self.done
-        counter = self.counter
+        if match:
+            with counter.get_lock():
+                counter.value += batch
+                total = counter.value
+            print(
+                f"\nFound after {total:,} attempts!\n"
+                f"  npub : {pk.public_key.bech32()}\n"
+                f"  nsec : {pk.bech32()}\n",
+                flush=True,
+            )
+            done.set()
+            return
 
-        batch = 0
-        BATCH_SIZE = 10_000
-
-        while not done.is_set():
-            pk = PrivateKey()
-
-            raw_x = pk.public_key.raw_bytes
-            match = True
-            for i in range(mask_len):
-                if (raw_x[i] & mask_bytes[i]) != target_bytes[i]:
-                    match = False
-                    break
-
-            batch += 1
-
-            if match:
-                total = counter.increment(batch)
+        if batch % BATCH_SIZE == 0:
+            with counter.get_lock():
+                counter.value += BATCH_SIZE
+                total = counter.value
+            if total % 1_000_000 < BATCH_SIZE:
                 print(
-                    f"\nFound after {total:,} attempts!\n"
-                    f"  npub : {pk.public_key.bech32()}\n"
-                    f"  nsec : {pk.bech32()}\n",
+                    f"{datetime.datetime.now():%H:%M:%S} — "
+                    f"tried {total:,} keys so far",
                     flush=True,
                 )
-                done.set()
-                return
-
-            if batch % BATCH_SIZE == 0:
-                total = counter.increment(BATCH_SIZE)
-                if total % 1_000_000 < BATCH_SIZE:
-                    print(
-                        f"{datetime.datetime.now():%H:%M:%S} — "
-                        f"tried {total:,} keys so far",
-                        flush=True,
-                    )
-                batch = 0
+            batch = 0
 
 
 def main():
@@ -113,23 +92,28 @@ def main():
     target_bytes, mask_bytes = _prefix_to_bitmask(target)
 
     print(f"Searching : npub1{target}...")
-    print(f"Threads   : {NUM_THREADS}\n")
+    print(f"Workers   : {NUM_WORKERS}\n")
 
-    counter = _Counter()
-    done = Event()
+    counter = mp.Value("q", 0)
+    done = mp.Event()
     start = time.time()
 
-    threads = [
-        _Worker(target, target_bytes, mask_bytes, counter, done)
-        for _ in range(NUM_THREADS)
+    workers = [
+        mp.Process(
+            target=_worker,
+            args=(target, target_bytes, mask_bytes, counter, done),
+            daemon=True,
+        )
+        for _ in range(NUM_WORKERS)
     ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
 
     print(f"Done in {time.time() - start:.1f}s")
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()
