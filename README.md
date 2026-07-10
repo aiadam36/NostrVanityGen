@@ -4,21 +4,23 @@ Nostr vanity public key generator
 
 ## How To Use
 
-Run:
+Install requirements:
 
 ```bash
 pip install -r requirements.txt
-nano main.py
 ```
 
-Configure the value:
+And refer below...
 
-```python
-TARGET = "null"  # your ideal pubkey
-NUM_WORKERS = 4  # amount of processes
+### Example commands
+
+```bash
+python3 main.py -t adam -w 4 # find 'adam' with 4 background processes
 ```
 
-Then run `python3 main.py`
+```bash
+python3 main.py --target adam --workers 4 # same as above
+```
 
 ## Contributing
 
