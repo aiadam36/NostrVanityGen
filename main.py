@@ -78,10 +78,16 @@ def main():
         metavar="N",
         help="number of parallel worker processes",
     )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="print progress more aggressively",
+    )
     args = parser.parse_args()
 
     target = args.target.lower()
     num_workers = args.workers
+    verbose = args.verbose
 
     invalid = set(target) - BECH32_SET
     if invalid:
@@ -98,7 +104,10 @@ def main():
     target_bytes, mask_bytes = _prefix_to_bitmask(target)
 
     print(f"Searching : npub1{target}...")
-    print(f"Workers   : {num_workers}\n")
+    print(f"Workers   : {num_workers}")
+    if verbose:
+        print(f"Verbose   : on")
+    print()
 
     counters = mp.Array("q", num_workers)
     done = mp.Event()
@@ -116,17 +125,30 @@ def main():
     for w in workers:
         w.start()
 
-    REPORT_EVERY = 1_000_000
+    REPORT_EVERY = 1_000 if verbose else 1_000_000
     last_reported = 0
     while not done.is_set():
         time.sleep(0.5)
         total = sum(counters)
         if total - last_reported >= REPORT_EVERY:
-            print(
-                f"{datetime.datetime.now():%H:%M:%S} — "
-                f"tried {total:,} keys so far",
-                flush=True,
-            )
+            elapsed = time.time() - start
+            rate = total / elapsed if elapsed > 0 else 0
+            if verbose:
+                per_worker = "  |  ".join(
+                    f"w{i+1}: {counters[i]:,}" for i in range(num_workers)
+                )
+                print(
+                    f"{datetime.datetime.now():%H:%M:%S} — "
+                    f"tried {total:,} keys  ({rate:,.0f}/s)\n"
+                    f"  {per_worker}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"{datetime.datetime.now():%H:%M:%S} — "
+                    f"tried {total:,} keys so far",
+                    flush=True,
+                )
             last_reported = total
 
     for w in workers:
