@@ -1,10 +1,9 @@
+import os
 import time
 import datetime
+import argparse
 import multiprocessing as mp
 from nostr.key import PrivateKey
-
-TARGET = "null"
-NUM_WORKERS = 4
 
 BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 BECH32_VALUES = {c: i for i, c in enumerate(BECH32_CHARSET)}
@@ -63,24 +62,45 @@ def _worker(worker_id: int, target: str, target_bytes: bytes, mask_bytes: bytes,
 
 
 def main():
-    target = TARGET.lower()
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "-t", "--target",
+        required=True,
+        metavar="PREFIX",
+        help="desired npub prefix to search for",
+    )
+    parser.add_argument(
+        "-w", "--workers",
+        type=int,
+        default=os.cpu_count() or 4,
+        metavar="N",
+        help="number of parallel worker processes",
+    )
+    args = parser.parse_args()
+
+    target = args.target.lower()
+    num_workers = args.workers
 
     invalid = set(target) - BECH32_SET
     if invalid:
         bad = "', '".join(sorted(invalid))
-        print(
-            f"Error: target contains character(s) not in the bech32 alphabet: '{bad}'\n"
+        parser.error(
+            f"target contains character(s) not in the bech32 alphabet: '{bad}'\n"
             f"\nbech32 uses only: {' '.join(sorted(BECH32_SET))}\n"
             f"Excluded characters: b i o 1"
         )
-        return
+
+    if num_workers < 1:
+        parser.error("workers must be at least 1")
 
     target_bytes, mask_bytes = _prefix_to_bitmask(target)
 
     print(f"Searching : npub1{target}...")
-    print(f"Workers   : {NUM_WORKERS}\n")
+    print(f"Workers   : {num_workers}\n")
 
-    counters = mp.Array("q", NUM_WORKERS)
+    counters = mp.Array("q", num_workers)
     done = mp.Event()
     result_queue = mp.Queue()
     start = time.time()
@@ -91,7 +111,7 @@ def main():
             args=(i, target, target_bytes, mask_bytes, counters, done, result_queue),
             daemon=True,
         )
-        for i in range(NUM_WORKERS)
+        for i in range(num_workers)
     ]
     for w in workers:
         w.start()
@@ -116,7 +136,7 @@ def main():
     npub, nsec = result_queue.get()
 
     per_worker = "  |  ".join(
-        f"w{i+1}: {counters[i]:,}" for i in range(NUM_WORKERS)
+        f"w{i+1}: {counters[i]:,}" for i in range(num_workers)
     )
     print(
         f"\nFound after {total:,} total attempts!\n"
