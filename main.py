@@ -140,7 +140,7 @@ def main():
                 print(
                     f"{datetime.datetime.now():%H:%M:%S} — "
                     f"tried {total:,} keys  ({rate:,.0f}/s)\n"
-                    f"  {per_worker}",
+                    f"  {per_worker}\n",
                     flush=True,
                 )
             else:
